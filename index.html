@@ -1,0 +1,1095 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stickman Football</title>
+    <script src="https://unpkg.com/react@17/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@17/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+                'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+                sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            /* --- Modern, lively soccer field background --- */
+            min-height: 100vh;
+            background:
+                linear-gradient(to bottom, #43a047 0%, #388e3c 100%);
+            position: relative;
+        }
+        /* Subtle field stripes */
+        .field-stripes {
+            position: fixed;
+            top: 0; left: 0; width: 100vw; height: 100vh;
+            pointer-events: none;
+            z-index: 0;
+            opacity: 0.18;
+            background:
+                repeating-linear-gradient(
+                    90deg,
+                    #4caf50 0px,
+                    #4caf50 60px,
+                    #43a047 60px,
+                    #43a047 120px
+                );
+        }
+        /* Center circle and midline */
+        .field-decor {
+            position: fixed;
+            top: 0; left: 0; width: 100vw; height: 100vh;
+            pointer-events: none;
+            z-index: 1;
+        }
+    </style>
+</head>
+<body>
+    <div class="field-stripes"></div>
+    <svg class="field-decor" width="100vw" height="100vh" viewBox="0 0 800 400" preserveAspectRatio="none">
+        <!-- Midline -->
+        <line x1="400" y1="0" x2="400" y2="400" stroke="#fff" stroke-width="3" opacity="0.25"/>
+        <!-- Center circle -->
+        <circle cx="400" cy="200" r="60" fill="none" stroke="#fff" stroke-width="3" opacity="0.25"/>
+        <!-- Center spot -->
+        <circle cx="400" cy="200" r="5" fill="#fff" opacity="0.25"/>
+    </svg>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback } = React;
+
+        const TRANSLATIONS = {
+            "en-US": {
+                "gameTitle": "Stickman Football",
+                "originalAuthor": "By Ahmad Idrees",
+                "adaptedBy": "Adapted by VS code with Stickmen",
+                "singlePlayer": "Single Player",
+                "multiplayer": "Multiplayer",
+                "selectDuration": "Select Game Duration",
+                "cyanTeam": "Blue Team",
+                "redTeam": "Red Team",
+                "versus": "vs",
+                "oneMinute": "1 Minute",
+                "twoMinutes": "2 Minutes",
+                "fourMinutes": "4 Minutes",
+                "eightMinutes": "8 Minutes",
+                "worldCup": "World Cup",
+                "multiplayerControls1": "Left Team: W (jump), A/D (move), S (grab)",
+                "multiplayerControls2": "Right Team: ↑ (jump), ←/→ (move), ↓ (grab)",
+                "singlePlayerControls1": "Use Arrow Keys: ↑ (jump), ←/→ (move), ↓ (grab)",
+                "singlePlayerControls2": "Hold ↓ to grab the ball when it's near!",
+                "backButton": "Back",
+                "gameWinner": "Wins!",
+                "gameDraw": "It's a Draw!",
+                "backToMenu": "Back to Menu"
+            },
+        };
+
+        const appLocale = '{{APP_LOCALE}}';
+        const browserLocale = navigator.languages?.[0] || navigator.language || 'en-US';
+        const findMatchingLocale = (locale) => {
+            if (TRANSLATIONS[locale]) return locale;
+            const lang = locale.split('-')[0];
+            const match = Object.keys(TRANSLATIONS).find(key => key.startsWith(lang + '-'));
+            return match || 'en-US';
+        };
+        const locale = (appLocale !== '{{APP_LOCALE}}') ? findMatchingLocale(appLocale) : findMatchingLocale(browserLocale);
+        const t = (key) => TRANSLATIONS[locale]?.[key] || TRANSLATIONS['en-US'][key] || key;
+
+        const GAME_WIDTH = 800;
+        const GAME_HEIGHT = 400;
+        const GROUND_HEIGHT = 80;
+        const PLAYER_WIDTH = 30;
+        const PLAYER_HEIGHT = 60;
+        const BALL_RADIUS = 10;
+        const GOAL_WIDTH = 80;
+        const GOAL_HEIGHT = 120;
+        const GRAVITY = 0.6;
+        const PLAYER_SPEED = 5;
+        const PLAYER_JUMP_POWER = -12;
+        const BALL_DAMPING = 0.99;
+        const BALL_BOUNCE_DAMPING = 0.8;
+        const MAX_BALL_SPEED = 13;
+        const AI_REACTION_DISTANCE = 300;
+        const AI_PREDICTION_TIME = 30;
+
+        const StickmanSoccer = () => {
+            const canvasRef = useRef(null);
+            const animationRef = useRef(null);
+            const keysRef = useRef({});
+            const lastFrameTimeRef = useRef(0);
+            
+            // Game state
+            const [gameMode, setGameMode] = useState(null);
+            const [playerMode, setPlayerMode] = useState(null);
+            const [timeLeft, setTimeLeft] = useState(0);
+            const [score, setScore] = useState({ left: 0, right: 0 });
+            const [gameStarted, setGameStarted] = useState(false);
+            const [winner, setWinner] = useState(null);
+            
+            // Game objects state
+            const gameStateRef = useRef({
+                leftPlayer: {
+                    x: 200,
+                    y: GAME_HEIGHT - GROUND_HEIGHT - PLAYER_HEIGHT/2,
+                    vx: 0,
+                    vy: 0,
+                    isGrabbing: false,
+                    hasBall: false,
+                    goalLineTime: 0,
+                    // AI state persistence
+                    targetX: 200,
+                    lastDecisionTime: 0,
+                    decisionCooldown: 0,
+                    stableStart: true,
+                    facingRight: true
+                },
+                rightPlayer: {
+                    x: 600,
+                    y: GAME_HEIGHT - GROUND_HEIGHT - PLAYER_HEIGHT/2,
+                    vx: 0,
+                    vy: 0,
+                    isGrabbing: false,
+                    hasBall: false,
+                    goalLineTime: 0,
+                    facingRight: false
+                },
+                ball: {
+                    x: GAME_WIDTH / 2,
+                    y: 150,
+                    vx: 0,
+                    vy: 0,
+                    grabbedBy: null,
+                    grabAngle: 0,
+                    grabAngularVelocity: 0
+                }
+            });
+
+            // Handle keyboard input
+            useEffect(() => {
+                const handleKeyDown = (e) => {
+                    // Don't prevent default for input fields
+                    if (e.target.tagName === 'INPUT') return;
+                    
+                    e.preventDefault();
+                    const key = e.key.toLowerCase();
+                    if (key === 'arrowup' || key === 'arrowdown' || key === 'arrowleft' || key === 'arrowright') {
+                        keysRef.current[key] = true;
+                    } else {
+                        keysRef.current[key] = true;
+                    }
+                };
+                
+                const handleKeyUp = (e) => {
+                    // Don't prevent default for input fields
+                    if (e.target.tagName === 'INPUT') return;
+                    
+                    e.preventDefault();
+                    const key = e.key.toLowerCase();
+                    if (key === 'arrowup' || key === 'arrowdown' || key === 'arrowleft' || key === 'arrowright') {
+                        keysRef.current[key] = false;
+                    } else {
+                        keysRef.current[key] = false;
+                    }
+                };
+                
+                window.addEventListener('keydown', handleKeyDown);
+                window.addEventListener('keyup', handleKeyUp);
+                
+                return () => {
+                    window.removeEventListener('keydown', handleKeyDown);
+                    window.removeEventListener('keyup', handleKeyUp);
+                };
+            }, []);
+
+            // Timer
+            useEffect(() => {
+                if (gameStarted && timeLeft > 0) {
+                    const timer = setInterval(() => {
+                        setTimeLeft(prev => {
+                            if (prev <= 1) {
+                                setGameStarted(false);
+                                determineWinner();
+                                return 0;
+                            }
+                            return prev - 1;
+                        });
+                    }, 1000);
+                    
+                    return () => clearInterval(timer);
+                }
+            }, [gameStarted, timeLeft]);
+
+            const determineWinner = () => {
+                if (score.left > score.right) {
+                    setWinner(t('cyanTeam'));
+                } else if (score.right > score.left) {
+                    setWinner(t('redTeam'));
+                } else {
+                    setWinner('Draw');
+                }
+            };
+
+            const resetPositions = () => {
+                const state = gameStateRef.current;
+                // Reset players to starting positions
+                state.leftPlayer.x = 200;
+                state.leftPlayer.y = GAME_HEIGHT - GROUND_HEIGHT - PLAYER_HEIGHT/2;
+                state.leftPlayer.vx = 0;
+                state.leftPlayer.vy = 0;
+                state.leftPlayer.isGrabbing = false;
+                state.leftPlayer.hasBall = false;
+                state.leftPlayer.goalLineTime = 0;
+                state.leftPlayer.facingRight = true;
+                // Reset AI state
+                state.leftPlayer.targetX = 200;
+                state.leftPlayer.lastDecisionTime = 0;
+                state.leftPlayer.decisionCooldown = 0;
+                state.leftPlayer.stableStart = true;
+                
+                state.rightPlayer.x = 600;
+                state.rightPlayer.y = GAME_HEIGHT - GROUND_HEIGHT - PLAYER_HEIGHT/2;
+                state.rightPlayer.vx = 0;
+                state.rightPlayer.vy = 0;
+                state.rightPlayer.isGrabbing = false;
+                state.rightPlayer.hasBall = false;
+                state.rightPlayer.goalLineTime = 0;
+                state.rightPlayer.facingRight = false;
+                
+                // Reset ball
+                state.ball.x = GAME_WIDTH / 2;
+                state.ball.y = 150;
+                state.ball.vx = 0;
+                state.ball.vy = 0;
+                state.ball.grabbedBy = null;
+                state.ball.grabAngle = 0;
+                state.ball.grabAngularVelocity = 0;
+            };
+
+            const resetGame = () => {
+                resetPositions();
+                setScore({ left: 0, right: 0 });
+                setWinner(null);
+            };
+
+            const startGame = (mode) => {
+                const times = {
+                    '1min': 60,
+                    '2min': 120,
+                    '4min': 240,
+                    '8min': 480,
+                    'worldcup': 300
+                };
+                
+                resetGame();
+                setGameMode(mode);
+                setTimeLeft(times[mode]);
+                setGameStarted(true);
+            };
+
+            // AI logic for single player mode
+            const updateAI = useCallback(() => {
+    if (playerMode !== 'single') return;
+
+    const state = gameStateRef.current;
+    const ai = state.leftPlayer; // AI is left player
+    const opponent = state.rightPlayer;
+    const ball = state.ball;
+    const currentTime = Date.now();
+
+    // --- Smarter AI logic starts here ---
+
+    // Decision cooldown system
+    if (ai.decisionCooldown > 0) {
+        ai.decisionCooldown--;
+        const difference = ai.targetX - ai.x;
+        const absDistance = Math.abs(difference);
+        if (absDistance > 8) {
+            const speedMultiplier = Math.min(absDistance / 40, 1.0);
+            ai.vx = Math.sign(difference) * PLAYER_SPEED * speedMultiplier;
+            ai.facingRight = difference > 0;
+        } else {
+            ai.vx = 0;
+        }
+        return;
+    }
+
+    // Stable starting behavior
+    if (ai.stableStart && timeLeft > 55) {
+        ai.targetX = 200;
+        ai.vx = 0;
+        if (Math.abs(ball.x - ai.x) < 120 || timeLeft <= 55) {
+            ai.stableStart = false;
+            ai.decisionCooldown = 10;
+        }
+        return;
+    }
+
+    // Predict ball trajectory (simulate up to 1s ahead)
+    let bestIntercept = { x: ball.x, y: ball.y, t: 0 };
+    let tempX = ball.x, tempY = ball.y, tempVx = ball.vx, tempVy = ball.vy;
+    for (let t = 0; t < 60; t++) {
+        tempVy += GRAVITY;
+        tempVx *= BALL_DAMPING;
+        tempX += tempVx;
+        tempY += tempVy;
+        if (tempX < BALL_RADIUS) { tempX = BALL_RADIUS; tempVx = -tempVx * BALL_BOUNCE_DAMPING; }
+        if (tempX > GAME_WIDTH - BALL_RADIUS) { tempX = GAME_WIDTH - BALL_RADIUS; tempVx = -tempVx * BALL_BOUNCE_DAMPING; }
+        if (tempY > GAME_HEIGHT - GROUND_HEIGHT - BALL_RADIUS) {
+            tempY = GAME_HEIGHT - GROUND_HEIGHT - BALL_RADIUS;
+            tempVy = -tempVy * BALL_BOUNCE_DAMPING;
+        }
+        // If ball will be near AI's side, remember this spot
+        if (tempX < GAME_WIDTH * 0.5 && t > 5) {
+            bestIntercept = { x: tempX, y: tempY, t };
+            break;
+        }
+    }
+
+    // Defensive: If ball is near AI goal, block
+    if (ball.x < GOAL_WIDTH * 2.2 && ball.vx < 0) {
+        ai.targetX = Math.max(ball.x, PLAYER_WIDTH/2 + 10);
+        if (Math.abs(ai.x - ball.x) < 40 && ai.y >= GAME_HEIGHT - GROUND_HEIGHT - PLAYER_HEIGHT/2 - 1) {
+            ai.vy = PLAYER_JUMP_POWER; // Jump to block
+        }
+        ai.decisionCooldown = 8;
+    }
+    // Offensive: If ball is on opponent's side, attack
+    else if (ball.x > GAME_WIDTH * 0.55) {
+        ai.targetX = ball.x - 25;
+        if (Math.abs(ai.x - ball.x) < 60 && ball.y < GAME_HEIGHT - GROUND_HEIGHT - 30 && ai.y >= GAME_HEIGHT - GROUND_HEIGHT - PLAYER_HEIGHT/2 - 1) {
+            ai.vy = PLAYER_JUMP_POWER; // Jump for high balls
+        }
+        ai.decisionCooldown = 8;
+    }
+    // Midfield: Intercept predicted ball position
+    else {
+        ai.targetX = bestIntercept.x - 10;
+        if (Math.abs(ai.x - bestIntercept.x) < 40 && bestIntercept.y < GAME_HEIGHT - GROUND_HEIGHT - 30 && ai.y >= GAME_HEIGHT - GROUND_HEIGHT - PLAYER_HEIGHT/2 - 1) {
+            ai.vy = PLAYER_JUMP_POWER;
+        }
+        ai.decisionCooldown = 8;
+    }
+
+    // Grab logic: Only grab if ball is low and close
+    if (!ai.hasBall && Math.abs(ai.x - ball.x) < 35 && Math.abs(ai.y - ball.y) < 35 && ball.y > GAME_HEIGHT - GROUND_HEIGHT - 40) {
+        ai.isGrabbing = true;
+    } else {
+        ai.isGrabbing = false;
+    }
+
+    // Release ball if close to opponent's goal or stuck
+    if (ai.hasBall && (ai.x > GAME_WIDTH * 0.7 || Math.abs(ball.vx) < 1)) {
+        ai.isGrabbing = false;
+    }
+
+    // Smoother movement
+    const difference = ai.targetX - ai.x;
+    const absDistance = Math.abs(difference);
+    if (absDistance > 8) {
+        const speedMultiplier = Math.min(absDistance / 40, 1.0);
+        ai.vx = Math.sign(difference) * PLAYER_SPEED * speedMultiplier;
+        ai.facingRight = difference > 0;
+    } else {
+        ai.vx = 0;
+    }
+}, [playerMode, timeLeft, gameMode]);
+
+            const updatePhysics = useCallback(() => {
+                const state = gameStateRef.current;
+                const keys = keysRef.current;
+                
+                // Update left player controls (always human player)
+                if (playerMode === 'multi') {
+                    // Multiplayer: WASD for left player
+                    if (keys['a']) {
+                        state.leftPlayer.vx = -PLAYER_SPEED;
+                        state.leftPlayer.facingRight = false;
+                    }
+                    else if (keys['d']) {
+                        state.leftPlayer.vx = PLAYER_SPEED;
+                        state.leftPlayer.facingRight = true;
+                    }
+                    else state.leftPlayer.vx = 0;
+                    
+                    if (keys['w'] && state.leftPlayer.y >= GAME_HEIGHT - GROUND_HEIGHT - PLAYER_HEIGHT/2 - 1 && !state.leftPlayer.isGrabbing) {
+                        state.leftPlayer.vy = PLAYER_JUMP_POWER;
+                    }
+                    
+                    // Grab control for left player
+                    state.leftPlayer.isGrabbing = keys['s'];
+                    
+                    // Arrow keys for right player
+                    if (keys['arrowleft']) {
+                        state.rightPlayer.vx = -PLAYER_SPEED;
+                        state.rightPlayer.facingRight = false;
+                    }
+                    else if (keys['arrowright']) {
+                        state.rightPlayer.vx = PLAYER_SPEED;
+                        state.rightPlayer.facingRight = true;
+                    }
+                    else state.rightPlayer.vx = 0;
+                    
+                    if (keys['arrowup'] && state.rightPlayer.y >= GAME_HEIGHT - GROUND_HEIGHT - PLAYER_HEIGHT/2 - 1 && !state.rightPlayer.isGrabbing) {
+                        state.rightPlayer.vy = PLAYER_JUMP_POWER;
+                    }
+                    
+                    // Grab control for right player
+                    state.rightPlayer.isGrabbing = keys['arrowdown'];
+                } else {
+                    // Single player: Arrow keys for human player (right side)
+                    if (keys['arrowleft']) {
+                        state.rightPlayer.vx = -PLAYER_SPEED;
+                        state.rightPlayer.facingRight = false;
+                    }
+                    else if (keys['arrowright']) {
+                        state.rightPlayer.vx = PLAYER_SPEED;
+                        state.rightPlayer.facingRight = true;
+                    }
+                    else state.rightPlayer.vx = 0;
+                    
+                    if (keys['arrowup'] && state.rightPlayer.y >= GAME_HEIGHT - GROUND_HEIGHT - PLAYER_HEIGHT/2 - 1 && !state.rightPlayer.isGrabbing) {
+                        state.rightPlayer.vy = PLAYER_JUMP_POWER;
+                    }
+                    
+                    // Grab control for human player
+                    state.rightPlayer.isGrabbing = keys['arrowdown'];
+                    
+                    // AI controls left player
+                    updateAI();
+                }
+                
+                // Update player positions and physics
+                [state.leftPlayer, state.rightPlayer].forEach((player, index) => {
+                    player.vy += GRAVITY;
+                    player.x += player.vx;
+                    player.y += player.vy;
+                    
+                    // Boundary collision
+                    if (player.x < PLAYER_WIDTH/2) player.x = PLAYER_WIDTH/2;
+                    if (player.x > GAME_WIDTH - PLAYER_WIDTH/2) player.x = GAME_WIDTH - PLAYER_WIDTH/2;
+                    
+                    // --- CORRECT GROUND COLLISION: feet touch brown area ---
+                    // The brown area starts at y = GAME_HEIGHT - GROUND_HEIGHT
+                    // The player's feet are at player.y + 20 + 15 (head offset + body + leg)
+                    // But your drawPlayer draws legs from (0,0) to (±5,15) so feet are at player.y + 15
+                    // But player.y is the "waist" (body bottom), so feet are at player.y + legLength (15)
+                    // So, snap player.y so (player.y + 15) == GAME_HEIGHT - GROUND_HEIGHT
+                    const legLength = 15;
+                    const feetY = player.y + legLength;
+                    const groundY = GAME_HEIGHT - GROUND_HEIGHT;
+                    if (feetY > groundY) {
+                        player.y = groundY - legLength;
+                        player.vy = 0;
+                    }
+                    // ------------------------------------------------------
+
+                    // Check if player is camping in their OWN goal area
+                    const isLeftPlayer = index === 0;
+                    const inOwnGoalArea = (isLeftPlayer && player.x < GOAL_WIDTH) || (!isLeftPlayer && player.x > GAME_WIDTH - GOAL_WIDTH);
+                    
+                    if (inOwnGoalArea) {
+                        // Player is camping in their own goal
+                        player.goalLineTime += 1/60; // Assuming 60 FPS
+                        
+                        // Check if exceeded 1 second
+                        if (player.goalLineTime >= 1) {
+                            // Award goal to other team (penalty for camping)
+                            if (isLeftPlayer) {
+                                setScore(prev => ({ ...prev, right: prev.right + 1 }));
+                            } else {
+                                setScore(prev => ({ ...prev, left: prev.left + 1 }));
+                            }
+                            resetPositions();
+                        }
+                    } else {
+                        // Reset timer if not in own goal area
+                        player.goalLineTime = 0;
+                    }
+                });
+                
+                // Update ball physics
+                if (state.ball.grabbedBy) {
+                    // Ball is grabbed by a player
+                    const grabber = state.ball.grabbedBy === 'left' ? state.leftPlayer : state.rightPlayer;
+                    
+                    // Apply rotational physics based on player movement
+                    const playerDirection = state.ball.grabbedBy === 'left' ? 1 : -1;
+                    
+                    // When player moves, ball rotates in opposite direction (slower rotation)
+                    state.ball.grabAngularVelocity += -grabber.vx * 0.008 * playerDirection;
+                    
+                    // Apply angular damping
+                    state.ball.grabAngularVelocity *= 0.85;
+                    
+                    // Update angle
+                    state.ball.grabAngle += state.ball.grabAngularVelocity;
+                    
+                    // Constrain angle based on player direction
+                    // For left player: -90° (left) to +90° (right)
+                    // For right player: 90° (left) to 270° (right)
+                    if (state.ball.grabbedBy === 'left') {
+                        // Left player: constrain between -π/2 and π/2
+                        if (state.ball.grabAngle < -Math.PI / 2) {
+                            state.ball.grabAngle = -Math.PI / 2;
+                            state.ball.grabAngularVelocity = 0;
+                        } else if (state.ball.grabAngle > Math.PI / 2) {
+                            state.ball.grabAngle = Math.PI / 2;
+                            state.ball.grabAngularVelocity = 0;
+                        }
+                    } else {
+                        // Right player: keep angle between π/2 and 3π/2
+                        // Normalize angle to 0-2π range first
+                        while (state.ball.grabAngle < 0) state.ball.grabAngle += Math.PI * 2;
+                        while (state.ball.grabAngle > Math.PI * 2) state.ball.grabAngle -= Math.PI * 2;
+                        
+                        // Now constrain
+                        if (state.ball.grabAngle < Math.PI / 2 && state.ball.grabAngle >= 0) {
+                            state.ball.grabAngle = Math.PI / 2;
+                            state.ball.grabAngularVelocity = 0;
+                        } else if (state.ball.grabAngle > 3 * Math.PI / 2 || 
+                                (state.ball.grabAngle < Math.PI / 2 && state.ball.grabAngle < 0)) {
+                            state.ball.grabAngle = 3 * Math.PI / 2;
+                            state.ball.grabAngularVelocity = 0;
+                        }
+                    }
+                    
+                    // Calculate ball position based on angle
+                    const holdDistance = PLAYER_WIDTH/2 + BALL_RADIUS;
+                    state.ball.x = grabber.x + Math.cos(state.ball.grabAngle) * holdDistance;
+                    state.ball.y = grabber.y + Math.sin(state.ball.grabAngle) * holdDistance;
+                    
+                    // Ball inherits player velocity
+                    state.ball.vx = grabber.vx;
+                    state.ball.vy = grabber.vy;
+                    
+                    // Check if player released the grab
+                    if (!grabber.isGrabbing) {
+                        // Release the ball with angular momentum converted to linear
+                        const releaseAngle = state.ball.grabAngle;
+                        const releaseSpeed = Math.abs(state.ball.grabAngularVelocity) * 20;
+                        state.ball.vx = grabber.vx * 1.5 + Math.cos(releaseAngle) * (3 + releaseSpeed);
+                        state.ball.vy = grabber.vy - 2 + Math.sin(releaseAngle) * releaseSpeed * 0.3;
+                        state.ball.grabbedBy = null;
+                        state.ball.grabAngle = 0;
+                        state.ball.grabAngularVelocity = 0;
+                        grabber.hasBall = false;
+                    }
+                } else {
+                    // Normal ball physics
+                    state.ball.vy += GRAVITY;
+                    state.ball.vx *= BALL_DAMPING;
+                    state.ball.x += state.ball.vx;
+                    state.ball.y += state.ball.vy;
+                }
+                
+                // Ball boundary collision
+                if (state.ball.x < BALL_RADIUS) {
+                    state.ball.x = BALL_RADIUS;
+                    state.ball.vx = -state.ball.vx * BALL_BOUNCE_DAMPING;
+                }
+                if (state.ball.x > GAME_WIDTH - BALL_RADIUS) {
+                    state.ball.x = GAME_WIDTH - BALL_RADIUS;
+                    state.ball.vx = -state.ball.vx * BALL_BOUNCE_DAMPING;
+                }
+                
+                // Ball ground collision and goal detection
+                if (state.ball.y > GAME_HEIGHT - GROUND_HEIGHT - BALL_RADIUS) {
+                    state.ball.y = GAME_HEIGHT - GROUND_HEIGHT - BALL_RADIUS;
+                    state.ball.vy = -state.ball.vy * BALL_BOUNCE_DAMPING;
+                }
+                
+                // Goal detection - ball hits back wall at any height up to goal height
+                if (state.ball.x <= BALL_RADIUS && state.ball.y > GAME_HEIGHT - GROUND_HEIGHT - GOAL_HEIGHT) {
+                    // Goal for right team
+                    setScore(prev => ({ ...prev, right: prev.right + 1 }));
+                    resetPositions();
+                } else if (state.ball.x >= GAME_WIDTH - BALL_RADIUS && state.ball.y > GAME_HEIGHT - GROUND_HEIGHT - GOAL_HEIGHT) {
+                    // Goal for left team
+                    setScore(prev => ({ ...prev, left: prev.left + 1 }));
+                    resetPositions();
+                }
+                
+                // Ball ceiling collision
+                if (state.ball.y < BALL_RADIUS) {
+                    state.ball.y = BALL_RADIUS;
+                    state.ball.vy = -state.ball.vy * BALL_BOUNCE_DAMPING;
+                }
+                
+                // Ball-player collision and grab detection
+                [state.leftPlayer, state.rightPlayer].forEach((player, index) => {
+                    const playerName = index === 0 ? 'left' : 'right';
+                    const otherPlayer = index === 0 ? state.rightPlayer : state.leftPlayer;
+                    const dx = state.ball.x - player.x;
+                    const dy = state.ball.y - player.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    
+                    if (distance < PLAYER_WIDTH/2 + BALL_RADIUS) {
+                        // If ball is grabbed by opponent, check if we can knock it out
+                        if (state.ball.grabbedBy && state.ball.grabbedBy !== playerName) {
+                            // Calculate collision force
+                            const angle = Math.atan2(dy, dx);
+                            const speed = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
+                            
+                            // If player is moving fast enough, knock the ball out
+                            if (speed > 2 || Math.abs(player.vy) > 5) {
+                                // Release ball from opponent's grab
+                                state.ball.grabbedBy = null;
+                                state.ball.grabAngle = 0;
+                                state.ball.grabAngularVelocity = 0;
+                                otherPlayer.hasBall = false;
+                                
+                                // Apply knockback force
+                                state.ball.vx = Math.cos(angle) * 8 + player.vx;
+                                state.ball.vy = Math.sin(angle) * 8 + player.vy;
+                            }
+                        }
+                        // Check if player is trying to grab an ungrabbed ball
+                        else if (player.isGrabbing && !state.ball.grabbedBy) {
+                            // Grab the ball and set initial angle based on position
+                            state.ball.grabbedBy = playerName;
+                            state.ball.grabAngle = Math.atan2(dy, dx);
+                            state.ball.grabAngularVelocity = 0;
+                            player.hasBall = true;
+                        } 
+                        // Normal collision if not grabbing
+                        else if (!state.ball.grabbedBy) {
+                            const angle = Math.atan2(dy, dx);
+                            const targetX = player.x + Math.cos(angle) * (PLAYER_WIDTH/2 + BALL_RADIUS);
+                            const targetY = player.y + Math.sin(angle) * (PLAYER_WIDTH/2 + BALL_RADIUS);
+                            
+                            // Only collide if ball is above player center (semicircle collision)
+                            if (state.ball.y < player.y || Math.abs(angle) < Math.PI * 0.5) {
+                                state.ball.x = targetX;
+                                state.ball.y = targetY;
+                                
+                                // Transfer velocity
+                                const speed = Math.sqrt(state.ball.vx * state.ball.vx + state.ball.vy * state.ball.vy);
+                                state.ball.vx = Math.cos(angle) * speed * 1.5 + player.vx * 0.5;
+                                state.ball.vy = Math.sin(angle) * speed * 1.5 + player.vy * 0.5;
+                                
+                                // Cap ball speed to prevent it from going too fast
+                                const newSpeed = Math.sqrt(state.ball.vx * state.ball.vx + state.ball.vy * state.ball.vy);
+                                if (newSpeed > MAX_BALL_SPEED) {
+                                    const scale = MAX_BALL_SPEED / newSpeed;
+                                    state.ball.vx *= scale;
+                                    state.ball.vy *= scale;
+                                }
+                            }
+                        }
+                    }
+                });
+            }, [playerMode, updateAI]);
+
+            const drawPlayer = (ctx, player, isRightPlayer) => {
+                const color = isRightPlayer ? '#DC143C' : '#00CED1';
+                const headRadius = 10;
+                const bodyLength = 20;
+                const legLength = 15;
+                const armLength = 15;
+                
+                // Save context state
+                ctx.save();
+                
+                // Translate to player position
+                ctx.translate(player.x, player.y);
+                
+                // Flip if facing left
+                if (!player.facingRight) {
+                    ctx.scale(-1, 1);
+                }
+                
+                // Draw head
+                ctx.beginPath();
+                ctx.arc(0, -headRadius - bodyLength, headRadius, 0, Math.PI * 2);
+                ctx.fillStyle = color;
+                ctx.fill();
+                
+                // Draw body
+                ctx.beginPath();
+                ctx.moveTo(0, -bodyLength);
+                ctx.lineTo(0, 0);
+                ctx.lineWidth = 3;
+                ctx.strokeStyle = color;
+                ctx.stroke();
+                
+                // Draw legs
+                ctx.beginPath();
+                ctx.moveTo(0, 0);
+                ctx.lineTo(-5, legLength);
+                ctx.moveTo(0, 0);
+                ctx.lineTo(5, legLength);
+                ctx.stroke();
+                
+                // Draw arms
+                ctx.beginPath();
+                ctx.moveTo(0, -bodyLength/2);
+                
+                // Different arm positions based on grabbing state
+                if (player.isGrabbing) {
+                    // Arms extended forward when grabbing
+                    ctx.lineTo(armLength, -bodyLength/2 + 5);
+                    ctx.moveTo(0, -bodyLength/2);
+                    ctx.lineTo(armLength, -bodyLength/2 - 5);
+                } else {
+                    // Normal arms
+                    ctx.lineTo(-armLength, -bodyLength/2);
+                    ctx.moveTo(0, -bodyLength/2);
+                    ctx.lineTo(armLength, -bodyLength/2);
+                }
+                ctx.stroke();
+                
+                // Restore context state
+                ctx.restore();
+            };
+
+            const draw = useCallback(() => {
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+                
+                const ctx = canvas.getContext('2d');
+                const state = gameStateRef.current;
+                
+                // Clear canvas
+                ctx.fillStyle = '#4CAF50'; // Green field
+                ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+                
+                // Draw field markings
+                ctx.strokeStyle = '#FFFFFF';
+                ctx.lineWidth = 2;
+                
+                // Center circle
+                ctx.beginPath();
+                ctx.arc(GAME_WIDTH/2, GAME_HEIGHT/2, 50, 0, Math.PI * 2);
+                ctx.stroke();
+                
+                // Center line
+                ctx.beginPath();
+                ctx.moveTo(GAME_WIDTH/2, 0);
+                ctx.lineTo(GAME_WIDTH/2, GAME_HEIGHT);
+                ctx.stroke();
+                
+                // Draw ground
+                ctx.fillStyle = '#8B4513'; // Brown ground
+                ctx.fillRect(0, GAME_HEIGHT - GROUND_HEIGHT, GAME_WIDTH, GROUND_HEIGHT);
+                
+                // Draw goals with new design
+                ctx.strokeStyle = '#FFFFFF';
+                ctx.lineWidth = 3;
+                
+                // Left goal
+                ctx.beginPath();
+                // Horizontal line on ground
+                ctx.moveTo(0, GAME_HEIGHT - GROUND_HEIGHT);
+                ctx.lineTo(GOAL_WIDTH, GAME_HEIGHT - GROUND_HEIGHT);
+                // Vertical line at halfway point
+                ctx.moveTo(GOAL_WIDTH / 2, GAME_HEIGHT - GROUND_HEIGHT);
+                ctx.lineTo(GOAL_WIDTH / 2, GAME_HEIGHT - GROUND_HEIGHT - GOAL_HEIGHT);
+                ctx.stroke();
+                
+                // Left goal net (between wall and vertical line)
+                ctx.lineWidth = 1.5;
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+                // Vertical net lines
+                for (let i = 0; i < GOAL_WIDTH / 2; i += 10) {
+                    ctx.beginPath();
+                    ctx.moveTo(i, GAME_HEIGHT - GROUND_HEIGHT - GOAL_HEIGHT);
+                    ctx.lineTo(i, GAME_HEIGHT - GROUND_HEIGHT);
+                    ctx.stroke();
+                }
+                // Horizontal net lines
+                for (let j = GAME_HEIGHT - GROUND_HEIGHT - GOAL_HEIGHT; j <= GAME_HEIGHT - GROUND_HEIGHT; j += 10) {
+                    ctx.beginPath();
+                    ctx.moveTo(0, j);
+                    ctx.lineTo(GOAL_WIDTH / 2, j);
+                    ctx.stroke();
+                }
+                
+                // Reset for right goal
+                ctx.strokeStyle = '#FFFFFF';
+                ctx.lineWidth = 3;
+                
+                // Right goal
+                ctx.beginPath();
+                // Horizontal line on ground
+                ctx.moveTo(GAME_WIDTH - GOAL_WIDTH, GAME_HEIGHT - GROUND_HEIGHT);
+                ctx.lineTo(GAME_WIDTH, GAME_HEIGHT - GROUND_HEIGHT);
+                // Vertical line at halfway point
+                ctx.moveTo(GAME_WIDTH - GOAL_WIDTH / 2, GAME_HEIGHT - GROUND_HEIGHT);
+                ctx.lineTo(GAME_WIDTH - GOAL_WIDTH / 2, GAME_HEIGHT - GROUND_HEIGHT - GOAL_HEIGHT);
+                ctx.stroke();
+                
+                // Right goal net (between wall and vertical line)
+                ctx.lineWidth = 1.5;
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+                // Vertical net lines
+                for (let i = GAME_WIDTH - GOAL_WIDTH / 2; i <= GAME_WIDTH; i += 10) {
+                    ctx.beginPath();
+                    ctx.moveTo(i, GAME_HEIGHT - GROUND_HEIGHT - GOAL_HEIGHT);
+                    ctx.lineTo(i, GAME_HEIGHT - GROUND_HEIGHT);
+                    ctx.stroke();
+                }
+                // Horizontal net lines
+                for (let j = GAME_HEIGHT - GROUND_HEIGHT - GOAL_HEIGHT; j <= GAME_HEIGHT - GROUND_HEIGHT; j += 10) {
+                    ctx.beginPath();
+                    ctx.moveTo(GAME_WIDTH - GOAL_WIDTH / 2, j);
+                    ctx.lineTo(GAME_WIDTH, j);
+                    ctx.stroke();
+                }
+                
+                // Draw goal line timers
+                const drawGoalLineTimer = (player, goalX, goalWidth) => {
+                    if (player.goalLineTime > 0) {
+                        const percentage = 1 - (player.goalLineTime / 1); // 1 second max
+                        const timerWidth = goalWidth * percentage;
+                        
+                        ctx.strokeStyle = percentage > 0.3 ? '#FFFF00' : '#FF0000'; // Yellow to red
+                        ctx.lineWidth = 5;
+                        ctx.beginPath();
+                        ctx.moveTo(goalX, GAME_HEIGHT - GROUND_HEIGHT + 10);
+                        ctx.lineTo(goalX + timerWidth, GAME_HEIGHT - GROUND_HEIGHT + 10);
+                        ctx.stroke();
+                        
+                        // Reset stroke style
+                        ctx.strokeStyle = '#FFFFFF';
+                        ctx.lineWidth = 3;
+                    }
+                };
+                
+                // Check and draw timers for players camping in their own goals
+                if (state.leftPlayer.x < GOAL_WIDTH) {
+                    drawGoalLineTimer(state.leftPlayer, 0, GOAL_WIDTH);
+                }
+                if (state.rightPlayer.x > GAME_WIDTH - GOAL_WIDTH) {
+                    drawGoalLineTimer(state.rightPlayer, GAME_WIDTH - GOAL_WIDTH, GOAL_WIDTH);
+                }
+                
+                // Draw players
+                drawPlayer(ctx, state.leftPlayer, false);
+                drawPlayer(ctx, state.rightPlayer, true);
+                
+                // Draw ball
+                ctx.fillStyle = '#FFFFFF'; // White ball
+                ctx.beginPath();
+                ctx.arc(state.ball.x, state.ball.y, BALL_RADIUS, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Add black pentagons to make it look like a soccer ball
+                ctx.strokeStyle = '#000000';
+                ctx.lineWidth = 1;
+                
+                // Center pentagon
+                ctx.beginPath();
+                for (let i = 0; i < 5; i++) {
+                    const angle = (i * 2 * Math.PI / 5) + Math.PI / 2;
+                    const x = state.ball.x + Math.cos(angle) * BALL_RADIUS * 0.5;
+                    const y = state.ball.y + Math.sin(angle) * BALL_RADIUS * 0.5;
+                    if (i === 0) {
+                        ctx.moveTo(x, y);
+                    } else {
+                        ctx.lineTo(x, y);
+                    }
+                }
+                ctx.closePath();
+                ctx.stroke();
+                
+                // Smaller pentagons around
+                for (let i = 0; i < 5; i++) {
+                    const angle = (i * 2 * Math.PI / 5) + Math.PI / 2;
+                    const x = state.ball.x + Math.cos(angle) * BALL_RADIUS * 0.8;
+                    const y = state.ball.y + Math.sin(angle) * BALL_RADIUS * 0.8;
+                    
+                    ctx.beginPath();
+                    for (let j = 0; j < 5; j++) {
+                        const subAngle = (j * 2 * Math.PI / 5) + Math.PI / 2 + angle;
+                        const subX = x + Math.cos(subAngle) * BALL_RADIUS * 0.2;
+                        const subY = y + Math.sin(subAngle) * BALL_RADIUS * 0.2;
+                        if (j === 0) {
+                            ctx.moveTo(subX, subY);
+                        } else {
+                            ctx.lineTo(subX, subY);
+                        }
+                    }
+                    ctx.closePath();
+                    ctx.stroke();
+                }
+            }, []);
+
+            const gameLoop = useCallback((currentTime) => {
+                if (gameStarted) {
+                    // Implement frame rate limiting to 60 FPS
+                    const targetFrameTime = 1000 / 60; // 60 FPS = ~16.67ms per frame
+                    
+                    if (currentTime - lastFrameTimeRef.current >= targetFrameTime) {
+                        updatePhysics();
+                        draw();
+                        lastFrameTimeRef.current = currentTime;
+                    }
+                    
+                    animationRef.current = requestAnimationFrame(gameLoop);
+                }
+            }, [gameStarted, updatePhysics, draw]);
+
+            useEffect(() => {
+                if (gameStarted) {
+                    animationRef.current = requestAnimationFrame(gameLoop);
+                }
+                
+                return () => {
+                    if (animationRef.current) {
+                        cancelAnimationFrame(animationRef.current);
+                    }
+                };
+            }, [gameStarted, gameLoop]);
+
+            const formatTime = (seconds) => {
+                const mins = Math.floor(seconds / 60);
+                const secs = seconds % 60;
+                return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+            };
+
+            return (
+                <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white">
+        {/* Main Menu */}
+        {!gameStarted && !gameMode && !playerMode && (
+            <div className="text-center">
+                <h1 className="text-4xl font-bold mb-8 text-white">{t('gameTitle')}</h1>
+                <p className="mb-2 text-gray-300">{t('originalAuthor')}</p>
+                <p className="mb-8 text-gray-300">{t('adaptedBy')}</p>
+                <div className="flex gap-4 mb-8 justify-center">
+                    <button
+                        onClick={() => setPlayerMode('single')}
+                        className="px-8 py-4 bg-blue-900 hover:bg-blue-700 rounded border-2 border-gray-600 text-lg"
+                    >
+                        {t('singlePlayer')}
+                    </button>
+                    <button
+                        onClick={() => setPlayerMode('multi')}
+                        className="px-8 py-4 bg-blue-900 hover:bg-blue-700 rounded border-2 border-gray-600 text-lg"
+                    >
+                        {t('multiplayer')}
+                    </button>
+                </div>
+            </div>
+        )}
+
+        {/* Game Setup Menu */}
+        {playerMode && !gameStarted && !gameMode && (
+            <div className="text-center">
+                <h2 className="text-2xl font-bold mb-4">{t('selectDuration')}</h2>
+                <div className="mb-4 text-lg">
+                    <span style={{ color: '#00CED1' }}>{t('cyanTeam')}</span>
+                    <span className="mx-4">{t('versus')}</span>
+                    <span style={{ color: '#DC143C' }}>{t('redTeam')}</span>
+                </div>
+                <div className="flex gap-4 mb-8">
+                    <button onClick={() => startGame('1min')} className="px-6 py-3 bg-blue-900 hover:bg-blue-700 rounded border-2 border-gray-600">{t('oneMinute')}</button>
+                    <button onClick={() => startGame('2min')} className="px-6 py-3 bg-blue-900 hover:bg-blue-700 rounded border-2 border-gray-600">{t('twoMinutes')}</button>
+                    <button onClick={() => startGame('4min')} className="px-6 py-3 bg-blue-900 hover:bg-blue-700 rounded border-2 border-gray-600">{t('fourMinutes')}</button>
+                    <button onClick={() => startGame('8min')} className="px-6 py-3 bg-blue-900 hover:bg-blue-700 rounded border-2 border-gray-600">{t('eightMinutes')}</button>
+                    <button onClick={() => startGame('worldcup')} className="px-6 py-3 bg-blue-900 hover:bg-blue-700 rounded border-2 border-gray-600">{t('worldCup')}</button>
+                </div>
+                <div className="text-sm text-gray-400">
+                    {playerMode === 'multi' ? (
+                        <>
+                            <p>{t('multiplayerControls1')}</p>
+                            <p>{t('multiplayerControls2')}</p>
+                        </>
+                    ) : (
+                        <>
+                            <p>{t('singlePlayerControls1')}</p>
+                            <p>{t('singlePlayerControls2')}</p>
+                        </>
+                    )}
+                </div>
+                <div className="flex gap-4 mt-4 justify-center">
+                    <button
+                        onClick={() => setPlayerMode(null)}
+                        className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+                    >
+                        {t('backButton')}
+                    </button>
+                    <button
+                        onClick={() => {
+                            setPlayerMode(null);
+                            setGameMode(null);
+                            setWinner(null);
+                            setGameStarted(false);
+                        }}
+                        className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+                    >
+                        {t('backToMenu')}
+                    </button>
+                </div>
+            </div>
+        )}
+
+        {/* Game and Winner Screen */}
+        {(gameStarted || winner) && (
+            <div className="flex flex-col items-center">
+                <div className="bg-blue-700 px-8 py-4 rounded-t-lg w-full flex justify-between items-center">
+                    <span className="text-xl font-bold">{t('cyanTeam')}: {score.left}</span>
+                    <span className="text-2xl font-mono">{formatTime(timeLeft)}</span>
+                    <span className="text-xl font-bold">{score.right} : {t('redTeam')}</span>
+                </div>
+                <canvas
+                    ref={canvasRef}
+                    width={GAME_WIDTH}
+                    height={GAME_HEIGHT}
+                    className="border-4 border-gray-700"
+                />
+                <div className="flex gap-4 mt-4">
+                    <button
+                        onClick={() => {
+                            setGameMode(null);
+                            setPlayerMode(null);
+                            setWinner(null);
+                            setGameStarted(false);
+                        }}
+                        className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+                    >
+                        {t('backToMenu')}
+                    </button>
+                    <button
+                        onClick={() => {
+                            setGameMode(null);
+                            setWinner(null);
+                            setGameStarted(false);
+                        }}
+                        className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+                    >
+                        {t('backButton')}
+                    </button>
+                </div>
+                {winner && (
+                    <div className="mt-8 text-center">
+                        <h2 className="text-3xl font-bold mb-4">
+                            {winner === 'Draw' ? t('gameDraw') : `${winner} ${t('gameWinner')}`}
+                        </h2>
+                        <button
+                            onClick={() => {
+                                setGameMode(null);
+                                setPlayerMode(null);
+                                setWinner(null);
+                                setGameStarted(false);
+                            }}
+                            className="px-6 py-3 bg-blue-600 hover:bg-blue-500 rounded"
+                        >
+                            {t('backToMenu')}
+                        </button>
+                    </div>
+                )}
+            </div>
+        )}
+    </div>
+            );
+        };
+
+        ReactDOM.render(<StickmanSoccer />, document.getElementById('root'));
+    </script>
+</body>
+</html>
